@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Conference Video Call</title>
+    <style>
+        .video-container {
+            display: flex;
+            flex-wrap: wrap;
+        }
+        .video-box {
+            width: 320px;
+            height: 240px;
+            margin: 10px;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <h1>Conference Video Call</h1>
+    <div id="signInForm">
+        <input type="text" id="usernameInput" placeholder="Enter username">
+        <button onclick="signIn()">Sign In</button>
+    </div>
+    <div class="video-container" id="videoContainer" style="display: none;"></div>
+    <div id="chatContainer" style="display: none;">
+        <div id="chatMessages"></div>
+        <input type="text" id="messageInput" placeholder="Type your message">
+        <button onclick="sendMessage()">Send</button>
+    </div>
+    <button id="startCallButton" style="display: none;">Start Call</button>
+    <button id="inviteButton" style="display: none;">Invite</button>
+    <button id="endCallButton" style="display: none;">End Call</button>
+    <button id="toggleVideoButton" style="display: none;">Toggle Video</button>
+    <button id="toggleAudioButton" style="display: none;">Toggle Audio</button>
+
+    <script>
+        let localStream;
+        let peerConnections = [];
+        let localVideo = document.createElement('video');
+        let usernameInput = document.getElementById('usernameInput');
+        let videoContainer = document.getElementById('videoContainer');
+        let chatContainer = document.getElementById('chatContainer');
+        let chatMessages = document.getElementById('chatMessages');
+        let messageInput = document.getElementById('messageInput');
+        let signInForm = document.getElementById('signInForm');
+        let startCallButton = document.getElementById('startCallButton');
+        let inviteButton = document.getElementById('inviteButton');
+        let endCallButton = document.getElementById('endCallButton');
+        let toggleVideoButton = document.getElementById('toggleVideoButton');
+        let toggleAudioButton = document.getElementById('toggleAudioButton');
+        let signalingServerUrl = 'ws://your-signaling-server-url';
+
+        let socket;
+
+        function signIn() {
+            const username = usernameInput.value.trim();
+            if (username === '') {
+                alert('Please enter a username.');
+                return;
+            }
+
+            // Perform user authentication (not implemented in this example)
+
+            // Show video call controls
+            signInForm.style.display = 'none';
+            videoContainer.style.display = 'block';
+            chatContainer.style.display = 'block';
+            startCallButton.style.display = 'inline-block';
+            inviteButton.style.display = 'inline-block';
+            endCallButton.style.display = 'inline-block';
+            toggleVideoButton.style.display = 'inline-block';
+            toggleAudioButton.style.display = 'inline-block';
+
+            // Connect to signaling server
+            socket = new WebSocket(signalingServerUrl);
+
+            socket.addEventListener('open', () => {
+                console.log('Connected to signaling server');
+            });
+
+            socket.addEventListener('message', handleMessage);
+
+            socket.addEventListener('close', () => {
+                console.log('Disconnected from signaling server');
+            });
+
+            socket.addEventListener('error', (error) => {
+                console.error('Signaling server error:', error);
+            });
+        }
+
+        function handleMessage(event) {
+            const message = JSON.parse(event.data);
+            if (message.type === 'chat') {
+                appendMessage(message.username, message.text);
+            }
+        }
+
+        function sendMessage() {
+            const messageText = messageInput.value.trim();
+            if (messageText === '') return;
+
+            const message = {
+                type: 'chat',
+                username: usernameInput.value.trim(),
+                text: messageText
+            };
+            socket.send(JSON.stringify(message));
+
+            appendMessage(message.username, message.text);
+
+            messageInput.value = '';
+        }
+
+        function appendMessage(username, text) {
+            const messageElement = document.createElement('div');
+            messageElement.textContent = `${username}: ${text}`;
+            chatMessages.appendChild(messageElement);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        async function startCall() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                addLocalVideo(localStream);
+
+                const configuration = { "iceServers": [{ "urls": "stun:stun.l.google.com:19302" }] };
+                const socket = new WebSocket(signalingServerUrl);
+
+                socket.addEventListener('open', () => {
+                    console.log('Connected to signaling server');
+                });
+
+                socket.addEventListener('message', async (event) => {
+                    const message = JSON.parse(event.data);
+                    if (message.type === 'offer') {
+                        await handleOffer(message.offer);
+                    } else if (message.type === 'candidate') {
+                        handleCandidate(message.candidate);
+                    }
+                });
+
+                socket.addEventListener('close', () => {
+                    console.log('Disconnected from signaling server');
+                });
+
+                socket.addEventListener('error', (error) => {
+                    console.error('Signaling server error:', error);
+                });
+
+                // Create offer and send to signaling server
+                const offer = await createOffer(localStream);
+                socket.send(JSON.stringify({ type: 'offer', offer }));
+
+            } catch (error) {
+                console.error('Error starting call:', error);
+            }
+        }
+
+        async function createOffer(stream) {
+            const peerConnection = new RTCPeerConnection();
+            peerConnections.push(peerConnection);
+
+            // Add local stream to the RTCPeerConnection
+            stream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
+
+            // Create offer
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+
+            // Listen for ICE candidates
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    // Send the candidate to the signaling server
+                    socket.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
+                }
+            };
+
+            // Listen for remote stream
+            peerConnection.ontrack = event => {
+                const remoteStream = event.streams[0];
+                addRemoteVideo(remoteStream);
+            };
+
+            return offer;
+        }
+
+        async function handleOffer(offer) {
+            const peerConnection = new RTCPeerConnection();
+            peerConnections.push(peerConnection);
+
+            // Add local stream to the RTCPeerConnection
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+            // Set remote description
+            await peerConnection.setRemoteDescription(offer);
+
+            // Create answer
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+
+            // Send answer to the signaling server
+            socket.send(JSON.stringify({ type: 'answer', answer }));
+        }
+
+        function handleCandidate(candidate) {
+            // Add ICE candidate to all peer connections
+            peerConnections.forEach(peerConnection => {
+                peerConnection.addIceCandidate(candidate);
+            });
+        }
+
+        function addLocalVideo(stream) {
+            const localVideo = document.createElement('video');
+            localVideo.srcObject = stream;
+            localVideo.autoplay = true;
+            localVideo.muted = true; // Mute local video
+            localVideo.className = 'video-box';
+            videoContainer.appendChild(localVideo);
+        }
+
+        function addRemoteVideo(stream) {
+            const remoteVideo = document.createElement('video');
+            remoteVideo.srcObject = stream;
+            remoteVideo.autoplay = true;
+            remoteVideo.className = 'video-box';
+            videoContainer.appendChild(remoteVideo);
+        }
+
+        function toggleVideo() {
+            localStream.getVideoTracks().forEach(track => {
+                track.enabled = !track.enabled;
+            });
+        }
+
+        function toggleAudio() {
+            localStream.getAudioTracks().forEach(track => {
+                track.enabled = !track.enabled;
+            });
+        }
+
+        startCallButton.addEventListener('click', startCall);
+        inviteButton.addEventListener('click', inviteOthers);
+        endCallButton.addEventListener('click', () => {
+            localStream.getTracks().forEach(track => track.stop());
+            peerConnections.forEach(pc => pc.close());
+            videoContainer.innerHTML = '';
+        });
+        toggleVideoButton.addEventListener('click', toggleVideo);
+        toggleAudioButton.addEventListener('click', toggleAudio);
+
+        function inviteOthers() {
+            const meetingLink = window.location.href;
+            alert('Share this link to invite others: ' + meetingLink);
+        }
+    </script>
+</body>
+</html>
+
+
